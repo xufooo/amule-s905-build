@@ -1,0 +1,17 @@
+[Unit]
+Description=aMule daemon (eD2k + Kad)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Foreground mode (--full-daemon would double-fork); --disable-fatal keeps
+# assertion dialogs from blocking systemd's auto-restart (see amuled(1)).
+ExecStart=/opt/aMule/amuled --disable-fatal
+Restart=on-failure
+RestartSec=5
+# P2P daemon: allow many concurrent connections
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

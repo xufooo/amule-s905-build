@@ -1,0 +1,15 @@
+[Unit]
+Description=aMule web interface (amuleweb)
+After=network-online.target amuled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Reads ~/.aMule/remote.conf, no arguments needed. Create it once with:
+#   amuleweb -P <EC password> -A <web admin password> -w
+ExecStart=/opt/aMule/amuleweb
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
