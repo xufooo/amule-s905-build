@@ -1,0 +1,64 @@
+name: aMule build — Ubuntu 18.04 arm64
+
+on:
+  workflow_dispatch:
+    inputs:
+      amule_version:
+        description: 'aMule tag to build (amule-org/amule)'
+        required: false
+        default: '3.0.1'
+      boost_version:
+        description: 'Boost version (>= 1.70 required)'
+        required: false
+        default: '1.74.0'
+      cryptopp_version:
+        description: 'Crypto++ version (>= 8.1 required)'
+        required: false
+        default: '8.9.0'
+      # wxWidgets is pinned inside scripts/build.sh to the 3.2-branch commit
+      # d73e1df63 (carries the wxEpollDispatcher fix amuled needs, amule-org/
+      # amule#1136, that no 3.2.x release has). No workflow input for it —
+      # edit the script when 3.2.12 ships.
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: amuled + amuleweb (glibc 2.27)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build inside Ubuntu 18.04 arm64 container
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD":/work -w /work \
+            arm64v8/ubuntu:18.04 \
+            bash /work/scripts/build.sh \
+              "${{ github.event.inputs.amule_version }}" \
+              "" \
+              "${{ github.event.inputs.boost_version }}" \
+              "${{ github.event.inputs.cryptopp_version }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aMule-${{ github.event.inputs.amule_version }}-ubuntu18.04-arm64
+          path: dist/
+          if-no-files-found: error
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="aMule-${{ github.event.inputs.amule_version }}-ubuntu18.04-arm64"
+          # overwrite the previous release on rebuilds of the same version (avoid tag conflicts)
+          gh release delete "$TAG" --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" 2>/dev/null || true
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "aMule ${{ github.event.inputs.amule_version }} — Ubuntu 18.04 arm64" \
+            --notes "amuled + amuleweb + amulecmd (daemon+web). Deployment: see the repo README."
