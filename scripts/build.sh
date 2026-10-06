@@ -9,7 +9,7 @@
 # Usage: build.sh [AMULE_VERSION] [WX_VERSION] [BOOST_VERSION] [CRYPTOPP_VERSION]
 #
 # Version pins (all verified against upstream):
-#   aMule      3.0.1   tag on amule-org/amule
+#   aMule      3.1.0   tag on amule-org/amule
 #   wxWidgets  3.2 branch @ d73e1df63  (2026-08-28)
 #                       aMule hard-requires >= 3.2.0 (cmake/wx.cmake)
 #                       + wxUSE_WEBREQUEST (--with-libcurl).
@@ -25,7 +25,7 @@
 #   Crypto++   8.9.0   aMule hard-requires >= 8.1 (cmake/cryptopp.cmake)
 set -euo pipefail
 
-AMULE_VERSION="${1:-3.0.1}"
+AMULE_VERSION="${1:-3.1.0}"
 # wxWidgets 3.2-branch commit pinned by aMule's own Flathub manifest
 # (packaging/flathub/org.amule.aMule.yaml). Carries the epoll fix amuled
 # needs (#1136) that no 3.2.x release has. Update when 3.2.12 ships.
@@ -62,7 +62,7 @@ apt-get install -yq --no-install-recommends \
   libreadline-dev zlib1g-dev libglib2.0-dev libexpat1-dev \
   libx11-dev libxt-dev libxpm-dev libxmu-dev libxft-dev \
   libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev \
-  libnotify-dev libxtst-dev
+  libnotify-dev libxtst-dev libupnp-dev
 
 # ---------------------------------------------------------------------------
 # 2. CMake. bionic's own 3.10.2 cannot configure aMule: options.cmake calls
@@ -189,8 +189,7 @@ cd "${SRC}"
 #    baked-in template/manpage paths resolve. Staged via DESTDIR.
 #    IP2COUNTRY=OFF: needs libmaxminddb + an external .mmdb download at
 #    runtime; nothing the daemon/WebUI needs.
-#    UPnP=OFF: bionic ships libupnp 1.6.x (ancient); forward TCP 4662 +
-#    UDP 4665/4672 on the router manually instead (docs/README.md).
+#    UPnP=ON: Ubuntu 18.04's libupnp enables automatic port forwarding.
 #    NLS=ON: gettext installed above; ships the .mo catalogs so the box
 #    can run with non-English messages if LANG asks for it.
 # ---------------------------------------------------------------------------
@@ -200,11 +199,11 @@ curl -fsSL "https://github.com/amule-org/amule/archive/refs/tags/${AMULE_VERSION
 tar xzf amule.tar.gz
 cd "amule-${AMULE_VERSION}"
 
-# bionic runs glibc 2.27, where pthread still lives in libpthread and must
-# be linked explicitly. Upstream's asio probe (cmake/boost.cmake) only
-# links on glibc >= 2.34 (pthread merged into libc), so it fails here at
-# link time with undefined pthread_key_create/delete. Give the probe the
-# pthread library; the flag below covers the real binaries too.
+# bionic's GCC 7 predates the deprecated-copy warning. Remove only those
+# two unsupported warning flags from the upstream CMake source for this build.
+# bionic glibc 2.27 also needs pthread linked explicitly for the asio probe
+# and final binaries.
+sed -i '/deprecated-copy/d' src/CMakeLists.txt
 sed -i 's#^[[:space:]]*check_include_files ("boost/system/error_code.hpp;boost/asio.hpp" ASIO_SOCKETS LANGUAGE CXX)#set (CMAKE_REQUIRED_LIBRARIES pthread)\ncheck_include_files ("boost/system/error_code.hpp;boost/asio.hpp" ASIO_SOCKETS LANGUAGE CXX)#' cmake/boost.cmake
 grep -n "CMAKE_REQUIRED_LIBRARIES pthread" cmake/boost.cmake
 
@@ -222,7 +221,7 @@ if ! cmake -B build \
   -DBUILD_AMULECMD=ON \
   -DBUILD_ED2K=OFF \
   -DENABLE_IP2COUNTRY=OFF \
-  -DENABLE_UPNP=OFF \
+  -DENABLE_UPNP=ON \
   -DENABLE_NLS=ON; then
   echo "=== configure failed — dumping CMakeError.log ==="
   tail -80 build/CMakeFiles/CMakeError.log 2>/dev/null || true
@@ -246,7 +245,7 @@ if ! cmake --build build -j"${JOBS}"; then
     -DBUILD_AMULECMD=ON \
     -DBUILD_ED2K=OFF \
     -DENABLE_IP2COUNTRY=OFF \
-    -DENABLE_UPNP=OFF \
+    -DENABLE_UPNP=ON \
     -DENABLE_NLS=ON; then
     echo "=== fallback configure failed — dumping CMakeError.log ==="
     tail -80 build/CMakeFiles/CMakeError.log 2>/dev/null || true
@@ -280,6 +279,14 @@ for app in amuled amuleweb amulecmd; do
 done | sort -u | while read -r soname; do
   cp -a "/usr/local/lib/${soname}"* "${AP}/lib/"
 done
+for app in amuled amuleweb amulecmd; do
+  if [ -x "${AP}/bin/${app}" ]; then
+    LD_LIBRARY_PATH=/usr/local/lib ldd "${AP}/bin/${app}" 2>/dev/null \
+      | awk '/lib(upnp|ixml|threadutil)\.so/ {print $1}'
+  fi
+done | sort -u | while read -r soname; do
+  cp -a "/usr/lib/aarch64-linux-gnu/${soname}"* "${AP}/lib/"
+done
 # Optimisation: strip debug symbols from binaries and bundled libs.
 # (Release/-O3 code stays; only symbol tables go — smaller image, faster
 # cold start on the box's eMMC, no runtime cost.)
@@ -312,6 +319,10 @@ for app in amuled amuleweb amulecmd; do
     LD_LIBRARY_PATH="${AP}/lib" ldd "${AP}/bin/${app}" | grep "not found" && { echo "MISSING LIBS for ${app}"; exit 1; } || true
   fi
 done
+if ! LD_LIBRARY_PATH="${AP}/lib" ldd "${AP}/bin/amuled" | awk -v bundle="${AP}/lib/" '/lib(upnp|ixml|threadutil)[.]so/ { found++; if (index($3, bundle) != 1) { print "UPnP runtime library not bundled: " $0; bad=1 } } END { if (!found || bad) exit 1 }'; then
+  echo "UPnP runtime dependency closure is incomplete"
+  exit 1
+fi
 echo "--- bundled wx libs ---"
 ls "${AP}/lib" | grep -c "\.so" || true
 

@@ -6,7 +6,7 @@ on:
       amule_version:
         description: 'aMule tag to build (amule-org/amule)'
         required: false
-        default: '3.0.1'
+        default: '3.1.0'
       boost_version:
         description: 'Boost version (>= 1.70 required)'
         required: false
