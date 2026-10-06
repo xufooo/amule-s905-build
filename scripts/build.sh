@@ -279,14 +279,8 @@ for app in amuled amuleweb amulecmd; do
 done | sort -u | while read -r soname; do
   cp -a "/usr/local/lib/${soname}"* "${AP}/lib/"
 done
-for app in amuled amuleweb amulecmd; do
-  if [ -x "${AP}/bin/${app}" ]; then
-    LD_LIBRARY_PATH=/usr/local/lib ldd "${AP}/bin/${app}" 2>/dev/null \
-      | awk '/lib(upnp|ixml|threadutil)\.so/ {print $1}'
-  fi
-done | sort -u | while read -r soname; do
-  cp -a "/usr/lib/aarch64-linux-gnu/${soname}"* "${AP}/lib/"
-done
+# UPnP shared libraries are provided by the Ubuntu 18.04 runtime package
+# on the target; do not copy libupnp into the application bundle.
 # Optimisation: strip debug symbols from binaries and bundled libs.
 # (Release/-O3 code stays; only symbol tables go — smaller image, faster
 # cold start on the box's eMMC, no runtime cost.)
@@ -319,10 +313,12 @@ for app in amuled amuleweb amulecmd; do
     LD_LIBRARY_PATH="${AP}/lib" ldd "${AP}/bin/${app}" | grep "not found" && { echo "MISSING LIBS for ${app}"; exit 1; } || true
   fi
 done
-if ! LD_LIBRARY_PATH="${AP}/lib" ldd "${AP}/bin/amuled" | awk -v bundle="${AP}/lib/" '/lib(upnp|ixml|threadutil)[.]so/ { found++; if (index($3, bundle) != 1) { print "UPnP runtime library not bundled: " $0; bad=1 } } END { if (!found || bad) exit 1 }'; then
-  echo "UPnP runtime dependency closure is incomplete"
-  exit 1
-fi
+for app in amuled amuleweb; do
+  if ! LD_LIBRARY_PATH="${AP}/lib" ldd "${AP}/bin/${app}" | awk -v systemlib="/usr/lib/aarch64-linux-gnu/" '/lib(upnp|ixml|threadutil)[.]so/ { found++; if (index($3, systemlib) != 1) { print "UPnP runtime library is not from Ubuntu: " $0; bad=1 } } END { if (!found || bad) exit 1 }'; then
+    echo "UPnP runtime dependency is not supplied by the Ubuntu system package for ${app}"
+    exit 1
+  fi
+done
 echo "--- bundled wx libs ---"
 ls "${AP}/lib" | grep -c "\.so" || true
 

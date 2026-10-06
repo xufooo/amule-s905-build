@@ -10,7 +10,7 @@ published as GitHub Releases — grab the latest tarball from the
 ```bash
 # 18.04 is EOL; point apt at the old-releases archive first
 sudo sed -i 's|ports.ubuntu.com/ubuntu|old-releases.ports.ubuntu.com/ubuntu|g' /etc/apt/sources.list
-sudo apt update && sudo apt install -y libglib2.0-0 libcurl4 libreadline7 libpng16-16 zlib1g
+sudo apt update && sudo apt install -y libglib2.0-0 libcurl4 libreadline7 libpng16-16 zlib1g libupnp6
 
 sudo tar xzf aMule-*.tar.gz -C /
 
