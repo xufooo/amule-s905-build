@@ -15,7 +15,7 @@ on a separate mounted disk and services running as `pi`.
 | Dependencies | Shared wxBase + network, without GTK/X11/OpenGL; pinned wx epoll fix retained |
 | New Web / API | `BUILD_AMULEAPI=ON`; REST, live SSE updates, categories and shared-folder tree |
 | GeoIP | `ENABLE_IP2COUNTRY=ON`; system `libmaxminddb`, DB-IP auto-update recommended |
-| Media metadata | Core support included; install `ffmpeg` for `ffprobe`, which reads metadata without transcoding |
+| Media metadata | Core support included, runtime OFF; optional and unnecessary for downloads or recursive shares |
 | File I/O | `ENABLE_MMAP=ON` includes the option; `MMapEnabled=0` remains the runtime baseline |
 | Mature core features | Endgame, recursive shares, filesystem watching and EC encryption supported |
 | UPnP / translations | Enabled; Ubuntu's UPnP runtime libraries retained |
@@ -51,7 +51,7 @@ First install runtime dependencies from your existing working Ubuntu sources:
 ```bash
 sudo apt update
 sudo apt install -y libglib2.0-0 libcurl4 libreadline7 libpng16-16 \
-  zlib1g libupnp6 libmaxminddb0 ffmpeg
+  zlib1g libupnp6 libmaxminddb0
 ```
 
 Ubuntu 18.04 is EOL; if apt sources no longer work, repair those separately.
@@ -80,6 +80,10 @@ The suggested 10 GiB free-space floor is for the N1's large download disk;
 adjust it for a smaller disk. Upload/download limits remain as configured
 (including unlimited upload with router SQM). Router SQM does not itself assign
 separate bandwidth budgets to aMule, BT and Xunlei.
+
+Media metadata extraction stays off. If you later want duration/codec tags,
+install `ffmpeg` and enable `[MediaMetadata] Enabled=1`; `ffprobe` is not a
+dependency of downloading, category management, recursive sharing or the Web UI.
 
 ### Switch the browser UI while retaining port 8084
 
