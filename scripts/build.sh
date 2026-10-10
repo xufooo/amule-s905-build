@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# aMule amuled + amuleweb — cloud build for Ubuntu 18.04 (bionic) arm64
+# aMule headless bundle — cloud build for Ubuntu 18.04 (bionic) arm64
 #
 # Runs INSIDE an arm64v8/ubuntu:18.04 container on a native arm64 GitHub
 # runner (ubuntu-24.04-arm). The result links against glibc 2.27, matching
@@ -34,7 +34,9 @@ BOOST_VERSION="${3:-1.74.0}"
 CRYPTOPP_VERSION="${4:-8.9.0}"
 
 export DEBIAN_FRONTEND=noninteractive
-JOBS="$(nproc)"
+JOBS="${JOBS:-$(nproc)}"
+CPU_FLAGS="-mcpu=cortex-a53 -ffunction-sections -fdata-sections"
+APPS=(amuled amuleapi amuleweb amulecmd)
 SRC=/work/src
 STAGE=/work/stage
 DIST=/work/dist
@@ -57,12 +59,10 @@ apt-get update -yq
 log "==> Installing build dependencies"
 apt-get install -yq --no-install-recommends \
   build-essential file curl unzip ca-certificates gnupg apt-transport-https pkg-config \
-  autoconf automake libtool gettext git \
-  libgtk-3-dev libcurl4-openssl-dev libpng-dev libjpeg-dev libtiff-dev \
+  autoconf automake libtool gettext git python3 \
+  libcurl4-openssl-dev libpng-dev \
   libreadline-dev zlib1g-dev libglib2.0-dev libexpat1-dev \
-  libx11-dev libxt-dev libxpm-dev libxmu-dev libxft-dev \
-  libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev \
-  libnotify-dev libxtst-dev libupnp-dev
+  libupnp-dev libmaxminddb-dev
 
 # ---------------------------------------------------------------------------
 # 2. CMake. bionic's own 3.10.2 cannot configure aMule: options.cmake calls
@@ -93,8 +93,8 @@ cd "${SRC}"
 #    /usr/local/include, and every aMule cmake probe would miss it.
 #    Layout mirrors the distro convention: include/cryptopp/*.h
 #    -mcpu=cortex-a53: target CPU is the S905's Cortex-A53 (baseline armv8,
-#    so the code still runs on any aarch64 box). cryptopp's GNUmakefile
-#    still appends its own -O3 -DNDEBUG -g2 on top.
+#    so no optional +crypto CPU extension is forced). Command-line
+#    CXXFLAGS overrides makefile defaults, so supply optimisation explicitly.
 # ---------------------------------------------------------------------------
 log "==> Building Crypto++ ${CRYPTOPP_VERSION}"
 rm -rf cryptopp && mkdir cryptopp && cd cryptopp
@@ -106,7 +106,7 @@ if [ ! -f cryptlib.h ]; then
   SUB="$(dirname "$(find . -name cryptlib.h | head -1)")"
   [ "${SUB}" != "." ] && cd "${SUB}"
 fi
-make -s -j"${JOBS}" CXXFLAGS="-mcpu=cortex-a53" libcryptopp.a
+make -s -j"${JOBS}" CXXFLAGS="-O3 -DNDEBUG -fPIC ${CPU_FLAGS}" libcryptopp.a
 mkdir -p /usr/include/cryptopp /usr/lib
 cp ./*.h /usr/include/cryptopp/
 cp libcryptopp.a /usr/lib/
@@ -143,21 +143,19 @@ fi
 cd "${SRC}"
 
 # ---------------------------------------------------------------------------
-# 5. wxWidgets — 3.2 BRANCH commit (NOT a release tarball), GTK3 + libcurl.
+# 5. wxWidgets — 3.2 BRANCH commit (NOT a release tarball), wxBase + libcurl.
 #    * Epoll fix: wx commit 3382306c8c35 ("Don't call handlers unregistered
 #      during wxEpollDispatcher::Dispatch()") fixes the amuled use-after-free
 #      (amule-org/amule#1136) that every 3.2.x release still carries. Pinned
 #      to d73e1df63, the same 3.2-branch commit aMule's Flathub manifest
 #      ships. Revert to archive tarball when 3.2.12 is out.
-#    * Option set below is the one from packaging/flathub/org.amule.aMule.yaml
-#      (maintainer-verified for aMule) MINUS --disable-shared: amuled +
-#      amuleweb run side by side on a 1-2 GB box, so a shared wx means the
-#      two processes share one copy of the code pages in RAM.
+#    * All shipped components are headless: build shared wxBase without
+#      GTK/X11/OpenGL. Keep libcurl for wxWebRequest (GeoIP/filter updates).
 #    * --disable-debug is the big optimization for the weak S905: wx's
 #      default configure produces a -g -O0 DEBUG build. --disable-debug
 #      flips it to an optimised release build.
 # ---------------------------------------------------------------------------
-log "==> Building wxWidgets 3.2-branch @ ${WX_COMMIT:0:12} (GTK3, libcurl, optimised)"
+log "==> Building wxWidgets 3.2-branch @ ${WX_COMMIT:0:12} (wxBase, libcurl, optimised)"
 # GitHub archive tarballs do NOT include git submodules, and the 3.2
 # branch keeps its bundled regex engine (pcre2) as one — so fetch the
 # pinned commit with git and init the submodules shallow.
@@ -167,33 +165,31 @@ git remote add origin "https://github.com/wxWidgets/wxWidgets.git"
 git fetch -q --depth 1 origin "${WX_COMMIT}"
 git checkout -q FETCH_HEAD
 git submodule update -q --init --depth 1
-mkdir -p build-gtk && cd build-gtk
+mkdir -p build-base && cd build-base
 # -mcpu=cortex-a53 for the target S905 CPU. Passed through configure's
 # env so wx APPENDS its own flags (-O2, -fvisibility, defines) on top —
 # passing CXXFLAGS to `make` would override the makefile's flags instead.
-CFLAGS="-mcpu=cortex-a53" CXXFLAGS="-mcpu=cortex-a53" ../configure --quiet \
+CFLAGS="${CPU_FLAGS}" CXXFLAGS="${CPU_FLAGS}" ../configure --quiet \
   --prefix=/usr/local \
-  --with-gtk=3 --enable-unicode --disable-debug \
-  --disable-mediactrl --disable-webview --disable-richtext --disable-aui \
-  --disable-html \
-  --without-libtiff --without-libjbig --without-libmspack --without-opengl \
+  --disable-gui --enable-unicode --disable-debug --enable-shared \
   --with-libcurl
 make -s -j"${JOBS}"
 make install
 cd "${SRC}"
 
 # ---------------------------------------------------------------------------
-# 6. aMule — daemon + webserver + cmdline client (daemon+web headless combo;
+# 6. aMule — daemon + REST/new Web UI + legacy web + cmdline client;
 #    no GUI, no remotegui, no ed2k helper — minimal components for the box).
 #    CMAKE_INSTALL_PREFIX=/opt/aMule is the FINAL path on the box, so the
 #    baked-in template/manpage paths resolve. Staged via DESTDIR.
-#    IP2COUNTRY=OFF: needs libmaxminddb + an external .mmdb download at
-#    runtime; nothing the daemon/WebUI needs.
+#    IP2COUNTRY=ON: libmaxminddb reads the DB-IP/MaxMind .mmdb database.
+#    MMAP=ON compiles the optional I/O path; runtime stays OFF until measured.
+#    BFD=OFF avoids another runtime library; backtraces retain addr2line fallback.
 #    UPnP=ON: Ubuntu 18.04's libupnp enables automatic port forwarding.
 #    NLS=ON: gettext installed above; ships the .mo catalogs so the box
 #    can run with non-English messages if LANG asks for it.
 # ---------------------------------------------------------------------------
-log "==> Building aMule ${AMULE_VERSION} (amuled + amuleweb + amulecmd)"
+log "==> Building aMule ${AMULE_VERSION} (${APPS[*]})"
 rm -rf "amule-${AMULE_VERSION}"
 curl -fsSL "https://github.com/amule-org/amule/archive/refs/tags/${AMULE_VERSION}.tar.gz" -o amule.tar.gz
 tar xzf amule.tar.gz
@@ -207,22 +203,37 @@ sed -i '/deprecated-copy/d' src/CMakeLists.txt
 sed -i 's#^[[:space:]]*check_include_files ("boost/system/error_code.hpp;boost/asio.hpp" ASIO_SOCKETS LANGUAGE CXX)#set (CMAKE_REQUIRED_LIBRARIES pthread)\ncheck_include_files ("boost/system/error_code.hpp;boost/asio.hpp" ASIO_SOCKETS LANGUAGE CXX)#' cmake/boost.cmake
 grep -n "CMAKE_REQUIRED_LIBRARIES pthread" cmake/boost.cmake
 
-if ! cmake -B build \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DGITDATE="${AMULE_VERSION}" \
-  -DCMAKE_INSTALL_PREFIX=/opt/aMule \
-  -DCMAKE_C_FLAGS="-mcpu=cortex-a53" \
-  -DCMAKE_CXX_FLAGS="-mcpu=cortex-a53" \
-  -DCMAKE_EXE_LINKER_FLAGS="-pthread" \
-  -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
-  -DBUILD_MONOLITHIC=OFF \
-  -DBUILD_DAEMON=ON \
-  -DBUILD_WEBSERVER=ON \
-  -DBUILD_AMULECMD=ON \
-  -DBUILD_ED2K=OFF \
-  -DENABLE_IP2COUNTRY=OFF \
-  -DENABLE_UPNP=ON \
-  -DENABLE_NLS=ON; then
+configure_amule() {
+  cmake -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DGITDATE="${AMULE_VERSION}" \
+    -DCMAKE_INSTALL_PREFIX=/opt/aMule \
+    -DCMAKE_C_FLAGS="${CPU_FLAGS}" \
+    -DCMAKE_CXX_FLAGS="${CPU_FLAGS}" \
+    -DCMAKE_EXE_LINKER_FLAGS="-pthread -Wl,--gc-sections" \
+    -DCMAKE_INTERPROCEDURAL_OPTIMIZATION="$1" \
+    -DBUILD_MONOLITHIC=OFF \
+    -DBUILD_REMOTEGUI=OFF \
+    -DBUILD_DAEMON=ON \
+    -DBUILD_AMULEAPI=ON \
+    -DBUILD_WEBSERVER=ON \
+    -DBUILD_AMULECMD=ON \
+    -DBUILD_ED2K=OFF \
+    -DBUILD_TESTING=OFF \
+    -DENABLE_IP2COUNTRY=ON \
+    -DENABLE_MMAP=ON \
+    -DENABLE_BFD=OFF \
+    -DENABLE_UPNP=ON \
+    -DENABLE_NLS=ON \
+    -DENABLE_VERSION_CHECK=ON \
+    -DENABLE_ALL_EXPERIMENTAL=OFF \
+    -DENABLE_IPV6=OFF \
+    -DENABLE_UTP=OFF \
+    -DENABLE_KAD_PROTOCOL_10=OFF \
+    -DENABLE_KAD_NODE_PROTECTION=OFF
+}
+
+if ! configure_amule ON; then
   echo "=== configure failed — dumping CMakeError.log ==="
   tail -80 build/CMakeFiles/CMakeError.log 2>/dev/null || true
   exit 1
@@ -232,21 +243,7 @@ fi
 if ! cmake --build build -j"${JOBS}"; then
   log "==> LTO build failed — falling back to a non-LTO build"
   rm -rf build
-  if ! cmake -B build \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DGITDATE="${AMULE_VERSION}" \
-    -DCMAKE_INSTALL_PREFIX=/opt/aMule \
-    -DCMAKE_C_FLAGS="-mcpu=cortex-a53" \
-    -DCMAKE_CXX_FLAGS="-mcpu=cortex-a53" \
-    -DCMAKE_EXE_LINKER_FLAGS="-pthread" \
-    -DBUILD_MONOLITHIC=OFF \
-    -DBUILD_DAEMON=ON \
-    -DBUILD_WEBSERVER=ON \
-    -DBUILD_AMULECMD=ON \
-    -DBUILD_ED2K=OFF \
-    -DENABLE_IP2COUNTRY=OFF \
-    -DENABLE_UPNP=ON \
-    -DENABLE_NLS=ON; then
+  if ! configure_amule OFF; then
     echo "=== fallback configure failed — dumping CMakeError.log ==="
     tail -80 build/CMakeFiles/CMakeError.log 2>/dev/null || true
     exit 1
@@ -259,10 +256,10 @@ cd "${SRC}"
 # ---------------------------------------------------------------------------
 # 7. Bundle: binaries + share + bundled wx shared libs + launch wrappers.
 #    Box layout (extract the tarball as root):
-#      /opt/aMule/bin/{amuled,amuleweb,amulecmd}
+#      /opt/aMule/bin/{amuled,amuleapi,amuleweb,amulecmd}
 #      /opt/aMule/lib/*.so        (wx libs)
 #      /opt/aMule/share/amule/    (templates etc.)
-#      /opt/aMule/{amuled,amuleweb,amulecmd}   (wrappers: set LD_LIBRARY_PATH)
+#      /opt/aMule/{amuled,amuleapi,amuleweb,amulecmd} (LD_LIBRARY_PATH wrappers)
 # ---------------------------------------------------------------------------
 log "==> Packaging bundle"
 AP="${STAGE}/opt/aMule"
@@ -271,7 +268,7 @@ mkdir -p "${AP}/lib"
 # (amuled/amuleweb/amulecmd link wxBase + wxBase_net — the daemon+web combo
 # is GUI-free, so the wxGTK core/adv/stc libs would be dead weight on the
 # box). Compute the closure via ldd so it survives wx upgrades.
-for app in amuled amuleweb amulecmd; do
+for app in "${APPS[@]}"; do
   if [ -x "${AP}/bin/${app}" ]; then
     LD_LIBRARY_PATH=/usr/local/lib ldd "${AP}/bin/${app}" 2>/dev/null \
       | awk '/libwx/ {print $1}'
@@ -286,7 +283,7 @@ done
 # cold start on the box's eMMC, no runtime cost.)
 strip --strip-unneeded "${AP}/bin/"* 2>/dev/null || true
 strip --strip-unneeded "${AP}/lib/"*.so* 2>/dev/null || true
-for app in amuled amuleweb amulecmd; do
+for app in "${APPS[@]}"; do
   if [ -x "${AP}/bin/${app}" ]; then
     cat > "${AP}/${app}" <<EOF
 #!/bin/sh
@@ -301,18 +298,43 @@ done
 # Ship the systemd units inside the bundle so deployment is one copy step.
 mkdir -p "${AP}/systemd"
 cp /work/systemd/*.service "${AP}/systemd/" 2>/dev/null || true
+mkdir -p "${AP}/config"
+cp /work/config/s905-recommended.ini "${AP}/config/"
+cp /work/README.md "${AP}/README.md"
 
 # ---------------------------------------------------------------------------
 # 8. Verification: correct arch + no missing shared libs.
 # ---------------------------------------------------------------------------
 log "==> Verifying artifacts"
-for app in amuled amuleweb amulecmd; do
-  if [ -x "${AP}/bin/${app}" ]; then
-    echo "--- ${app} ---"
-    file "${AP}/bin/${app}"
-    LD_LIBRARY_PATH="${AP}/lib" ldd "${AP}/bin/${app}" | grep "not found" && { echo "MISSING LIBS for ${app}"; exit 1; } || true
+for app in "${APPS[@]}"; do
+  test -x "${AP}/bin/${app}"
+  test -x "${AP}/${app}"
+  file "${AP}/bin/${app}" | tee /tmp/amule-file.txt
+  grep -q 'ARM aarch64' /tmp/amule-file.txt
+  LD_LIBRARY_PATH="${AP}/lib" ldd "${AP}/bin/${app}" > /tmp/amule-ldd.txt
+  cat /tmp/amule-ldd.txt
+  if grep -q 'not found' /tmp/amule-ldd.txt; then
+    echo "MISSING LIBS for ${app}"; exit 1
   fi
+  if grep -Ei 'lib(gtk|gdk|wx_gtk|GL[.]|X11)' /tmp/amule-ldd.txt; then
+    echo "Unexpected GUI dependency for ${app}"; exit 1
+  fi
+  # wxApp-based tools print a valid version but return -1 (shell 255)
+  # when their OnInit exits early for --version. This is not a build failure.
+  version_rc=0
+  timeout 15 "${AP}/${app}" --version > /tmp/amule-version.txt 2>&1 || version_rc=$?
+  cat /tmp/amule-version.txt
+  case "$version_rc" in
+    0|255) ;;
+    *) echo "Version probe failed for ${app}: ${version_rc}"; exit 1 ;;
+  esac
+  grep -qi 'amule' /tmp/amule-version.txt
 done
+test -s "${AP}/share/amule/amuleapi-static/index.html"
+test -d "${AP}/share/amule/amuleapi-static/js"
+grep -q '^BUILD_AMULEAPI:BOOL=ON$' "${SRC}/amule-${AMULE_VERSION}/build/CMakeCache.txt"
+grep -q '^ENABLE_IP2COUNTRY:BOOL=ON$' "${SRC}/amule-${AMULE_VERSION}/build/CMakeCache.txt"
+LD_LIBRARY_PATH="${AP}/lib" ldd "${AP}/bin/amuled" | grep 'libmaxminddb'
 for app in amuled amuleweb; do
   if ! LD_LIBRARY_PATH="${AP}/lib" ldd "${AP}/bin/${app}" | awk -v systemlib="/usr/lib/aarch64-linux-gnu/" '/lib(upnp|ixml|threadutil)[.]so/ { found++; if (index($3, systemlib) != 1) { print "UPnP runtime library is not from Ubuntu: " $0; bad=1 } } END { if (!found || bad) exit 1 }'; then
     echo "UPnP runtime dependency is not supplied by the Ubuntu system package for ${app}"
@@ -321,6 +343,17 @@ for app in amuled amuleweb; do
 done
 echo "--- bundled wx libs ---"
 ls "${AP}/lib" | grep -c "\.so" || true
+
+log "==> Smoke testing daemon + new Web/API"
+bash /work/scripts/smoke-test.sh "${AP}"
+
+# Keep the feature switches and source identities alongside the archive.
+{
+  printf 'aMule=%s\nwxWidgets=%s\nBoost=%s\nCrypto++=%s\n' \
+    "$AMULE_VERSION" "$WX_COMMIT" "$BOOST_VERSION" "$CRYPTOPP_VERSION"
+  grep -E '^(BUILD_|ENABLE_|CMAKE_(BUILD_TYPE|C_FLAGS:|CXX_FLAGS:|INTERPROCEDURAL_OPTIMIZATION))' \
+    "${SRC}/amule-${AMULE_VERSION}/build/CMakeCache.txt"
+} > "${DIST}/build-features.txt"
 
 # ---------------------------------------------------------------------------
 # 9. Tarball + checksum

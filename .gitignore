@@ -1,0 +1,17 @@
+# Build outputs and downloaded sources
+/src/
+/stage/
+/dist/
+/build/
+/artifacts/
+
+# Local profiles, deployment state and backups
+/.aMule/
+/backups/
+/private/
+.env
+.env.*
+*.log
+*.bak
+*.orig
+.DS_Store
