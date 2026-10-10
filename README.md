@@ -100,7 +100,7 @@ Merge into `/home/pi/.aMule/amule.conf` (do not create duplicate sections):
 
 ```ini
 [AmuleApi]
-Enabled=1
+Enabled=0
 HttpPort=8084
 BindAddress=0.0.0.0
 Path=/opt/aMule/amuleapi
@@ -109,9 +109,29 @@ Path=/opt/aMule/amuleapi
 Enabled=0
 ```
 
-`amuled` starts the API child and supplies a one-time EC token, so a separate
-API systemd service and another copy of the EC password are unnecessary.
-Keep the existing `[ExternalConnect]` settings. Keep TCP 4662, UDP 4672,
+Run the API with its own supplied systemd unit. On the N1, a stalled EC reply
+caused the API child to exit; the core does not restart that child. The unit
+retries automatically, including when the API exits successfully after losing
+EC. Keep core autostart disabled above so only one process owns port 8084.
+
+Create `/home/pi/.aMule/amuleapi.conf`, owned by `pi` with mode `0600`:
+
+```ini
+[Server]
+BindAddress=0.0.0.0
+Port=8084
+StaticRoot=/opt/aMule/share/amule/amuleapi-static
+[EC]
+Host=127.0.0.1
+Port=4712
+Password=<your existing EC password in plaintext>
+Encryption=1
+```
+
+The native API reads the plaintext EC password from this private file; its
+browser admin password remains separately salted and hashed. Use the actual
+existing EC port if it differs. Keep the existing `[ExternalConnect]` settings.
+Keep TCP 4662, UDP 4672,
 EC 4712, UPnP and other existing network settings unchanged. Port 8088 belongs
 to nginx on this N1; do not replace it.
 
@@ -122,9 +142,10 @@ per-thread allocator overhead without imposing a hard memory limit.
 
 ```bash
 sudo cp /opt/aMule/systemd/amuled.service /etc/systemd/system/
+sudo cp /opt/aMule/systemd/amuleapi.service /etc/systemd/system/
 sudo systemctl disable amuleweb
 sudo systemctl daemon-reload
-sudo systemctl enable --now amuled
+sudo systemctl enable --now amuled amuleapi
 ```
 
 Open `http://<N1-IP>:8084/`. Confirm the new interface loads, categories are

@@ -1,0 +1,23 @@
+[Unit]
+Description=aMule Web API
+After=amuled.service
+Requires=amuled.service
+PartOf=amuled.service
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+Environment=HOME=/home/pi
+Environment=MALLOC_ARENA_MAX=2
+WorkingDirectory=/home/pi
+UMask=0077
+NoNewPrivileges=true
+ExecStart=/opt/aMule/amuleapi --config-dir=/home/pi/.aMule
+# EC loss can exit with status 0, so on-failure would leave the UI offline.
+Restart=always
+RestartSec=10
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
