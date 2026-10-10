@@ -319,7 +319,16 @@ for app in "${APPS[@]}"; do
   if grep -Ei 'lib(gtk|gdk|wx_gtk|GL[.]|X11)' /tmp/amule-ldd.txt; then
     echo "Unexpected GUI dependency for ${app}"; exit 1
   fi
-  "${AP}/${app}" --version
+  # wxApp-based tools print a valid version but return -1 (shell 255)
+  # when their OnInit exits early for --version. This is not a build failure.
+  version_rc=0
+  timeout 15 "${AP}/${app}" --version > /tmp/amule-version.txt 2>&1 || version_rc=$?
+  cat /tmp/amule-version.txt
+  case "$version_rc" in
+    0|255) ;;
+    *) echo "Version probe failed for ${app}: ${version_rc}"; exit 1 ;;
+  esac
+  grep -qi 'amule' /tmp/amule-version.txt
 done
 test -s "${AP}/share/amule/amuleapi-static/index.html"
 test -d "${AP}/share/amule/amuleapi-static/js"
