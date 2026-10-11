@@ -38,7 +38,7 @@ jobs:
           CRYPTOPP_VERSION: ${{ inputs.cryptopp_version }}
         run: |
           set -euo pipefail
-          docker run --rm --platform linux/arm64 \
+          docker run --rm -i --platform linux/arm64 \
             -v "$PWD":/work -w /work \
             -e AMULE_VERSION -e BOOST_VERSION -e CRYPTOPP_VERSION \
             arm64v8/ubuntu:18.04 bash -s <<'BUILD'
@@ -294,4 +294,4 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "aMule ${AMULE_VERSION} — S905 / Ubuntu 18.04 arm64" \
-            --notes "amuled + amuleapi/new Web UI + legacy amuleweb + amulecmd. GeoIP enabled; Cortex-A53 release build. Deployment: see the repo README."
+            --notes "amuled + amuleapi/new Web UI + legacy amuleweb + amulecmd. GeoIP enabled; Cortex-A53 release build. Build details: see the repo README."
